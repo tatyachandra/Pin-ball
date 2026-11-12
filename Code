@@ -1,0 +1,552 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pinball Adventure</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 18px;
+    background: #10132e;
+    color: white;
+    font-family: Arial, sans-serif;
+    text-align: center;
+  }
+  h1 { color: #facc15; margin: 8px 0; }
+  .stats {
+    display: flex;
+    justify-content: center;
+    gap: 22px;
+    flex-wrap: wrap;
+    margin: 15px auto;
+    font-size: 17px;
+  }
+  .stats strong { color: #67e8f9; }
+  canvas {
+    display: block;
+    width: min(100%, 400px);
+    height: auto;
+    margin: 0 auto;
+    border: 4px solid #818cf8;
+    border-radius: 14px;
+    background: #171b45;
+    touch-action: none;
+  }
+  .controls {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    max-width: 400px;
+    margin: 12px auto;
+  }
+  button {
+    background: #4338ca;
+    color: white;
+    border: 2px solid #818cf8;
+    border-radius: 12px;
+    padding: 14px 18px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    touch-action: none;
+  }
+  button:active { background: #6366f1; }
+  .flipper { flex: 1; min-height: 58px; }
+  #message {
+    min-height: 28px;
+    color: #fde68a;
+    font-weight: bold;
+    margin: 10px;
+  }
+  #next { background: #047857; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .help {
+    max-width: 400px;
+    margin: 14px auto;
+    color: #c7d2fe;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+
+<h1>🎮 Pinball Adventure</h1>
+
+<div class="stats">
+  <div>Level: <strong id="level">1 / 20</strong></div>
+  <div>Score: <strong id="score">0</strong></div>
+  <div>Target: <strong id="target">140</strong></div>
+  <div>Balls: <strong id="balls">3</strong></div>
+</div>
+
+<canvas id="game" width="400" height="650"></canvas>
+
+<div class="controls">
+  <button class="flipper" id="left">◀ LEFT</button>
+  <button id="launch">LAUNCH 🚀</button>
+  <button class="flipper" id="right">RIGHT ▶</button>
+</div>
+
+<div id="message">Press LAUNCH to begin!</div>
+
+<div class="controls">
+  <button id="restart">Restart Level ↻</button>
+  <button id="next" disabled>Next Level →</button>
+</div>
+
+<div class="help">
+  Hold LEFT and RIGHT to operate the flippers.
+  On a computer, use the arrow keys and spacebar.
+  Hit the bumpers to earn points. Reach the target to unlock the next level.
+</div>
+
+<script>
+"use strict";
+
+// ----------------------------------
+// PINBALL ADVENTURE
+// ----------------------------------
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const levelText = document.getElementById("level");
+const scoreText = document.getElementById("score");
+const targetText = document.getElementById("target");
+const ballsText = document.getElementById("balls");
+const message = document.getElementById("message");
+const nextButton = document.getElementById("next");
+
+const WIDTH = 400;
+const HEIGHT = 650;
+
+let level = 1;
+let score = 0;
+let balls = 3;
+let ball = null;
+let bumpers = [];
+let leftPressed = false;
+let rightPressed = false;
+let won = false;
+let gameOver = false;
+
+// Each level has a clear target.
+// Every bumper hit awards the same published points.
+function targetForLevel(n) {
+  return 100 + n * 40;
+}
+
+function pointsForLevel(n) {
+  return 20 + n * 3;
+}
+
+// Deterministic bumper layouts: no hidden random scoring.
+function makeBumpers(n) {
+  const layouts = [
+    [ [105,150], [295,150], [200,260], [105,365] ],
+    [ [105,150], [200,150], [295,150], [150,275], [250,365] ],
+    [ [105,150], [295,150], [105,260], [295,260], [200,365] ],
+    [ [105,150], [200,150], [295,150], [105,275], [200,275], [295,275] ],
+    [ [105,140], [200,140], [295,140], [150,245], [250,245], [105,350], [295,350] ]
+  ];
+
+  const layout = layouts[(n - 1) % layouts.length];
+  const extra = Math.min(2, Math.floor((n - 1) / 5));
+
+  const result = layout.map((p, i) => ({
+    x: p[0],
+    y: p[1],
+    radius: 21,
+    flash: 0,
+    id: i
+  }));
+
+  if (extra >= 1) result.push({x: 155, y: 435, radius: 19, flash: 0, id: 20});
+  if (extra >= 2) result.push({x: 245, y: 435, radius: 19, flash: 0, id: 21});
+
+  return result;
+}
+
+function updateDisplay() {
+  levelText.textContent = level + " / 20";
+  scoreText.textContent = score;
+  targetText.textContent = targetForLevel(level);
+  ballsText.textContent = balls;
+}
+
+function resetLevel() {
+  score = 0;
+  balls = 3;
+  ball = null;
+  won = false;
+  gameOver = false;
+  leftPressed = false;
+  rightPressed = false;
+  bumpers = makeBumpers(level);
+
+  nextButton.disabled = true;
+  message.textContent = "Press LAUNCH to begin!";
+  updateDisplay();
+  draw();
+}
+
+function launchBall() {
+  if (won || gameOver || ball !== null || balls <= 0) return;
+
+  balls--;
+
+  // Every launch uses the same starting speed and direction.
+  ball = {
+    x: 350,
+    y: 555,
+    vx: -3.5,
+    vy: -9.5,
+    radius: 8
+  };
+
+  message.textContent = "Ball in play! Hit the bumpers!";
+  updateDisplay();
+}
+
+function awardBumperPoints(bumper) {
+  score += pointsForLevel(level);
+  bumper.flash = 12;
+  updateDisplay();
+
+  if (score >= targetForLevel(level)) {
+    won = true;
+    ball = null;
+    nextButton.disabled = false;
+
+    if (level === 20) {
+      message.textContent = "🏆 AMAZING! You beat all 20 levels!";
+    } else {
+      message.textContent = "🎉 Level complete! You unlocked level " + (level + 1) + "!";
+    }
+  }
+}
+
+// Circle collision with a bumper.
+function hitBumper(b) {
+  const dx = ball.x - b.x;
+  const dy = ball.y - b.y;
+  const distance = Math.hypot(dx, dy);
+  const minimum = ball.radius + b.radius;
+
+  if (distance >= minimum) return;
+
+  const safeDistance = Math.max(distance, 0.001);
+  const nx = dx / safeDistance;
+  const ny = dy / safeDistance;
+
+  // Move the ball outside the bumper.
+  ball.x = b.x + nx * (minimum + 0.5);
+  ball.y = b.y + ny * (minimum + 0.5);
+
+  // Reflect velocity only when moving toward the bumper.
+  const velocityToward = ball.vx * nx + ball.vy * ny;
+
+  if (velocityToward < 0) {
+    ball.vx -= 2 * velocityToward * nx;
+    ball.vy -= 2 * velocityToward * ny;
+  }
+
+  // Small, consistent bumper bounce.
+  ball.vx += nx * 1.2;
+  ball.vy += ny * 1.2;
+
+  awardBumperPoints(b);
+}
+
+// Collision between a ball and a flipper segment.
+function hitFlipper(x1, y1, x2, y2, active) {
+  if (!ball) return;
+
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lengthSquared = dx * dx + dy * dy;
+
+  const t = Math.max(0, Math.min(1,
+    ((ball.x - x1) * dx + (ball.y - y1) * dy) / lengthSquared
+  ));
+
+  const closestX = x1 + t * dx;
+  const closestY = y1 + t * dy;
+
+  let nx = ball.x - closestX;
+  let ny = ball.y - closestY;
+  const distance = Math.hypot(nx, ny);
+  const minimum = ball.radius + 8;
+
+  if (distance >= minimum || distance === 0) return;
+
+  nx /= distance;
+  ny /= distance;
+
+  // Only bounce when the ball is moving into the flipper.
+  const toward = ball.vx * nx + ball.vy * ny;
+
+  if (toward < 0) {
+    ball.x = closestX + nx * (minimum + 0.5);
+    ball.y = closestY + ny * (minimum + 0.5);
+
+    ball.vx -= 1.8 * toward * nx;
+    ball.vy -= 1.8 * toward * ny;
+
+    // Pressing a flipper gives it a stronger upward bounce.
+    if (active && ball.vy > -11) {
+      ball.vy = -11;
+    }
+  }
+}
+
+function loseBall() {
+  ball = null;
+
+  if (balls > 0) {
+    message.textContent = "Ball lost. Press LAUNCH for your next ball.";
+  } else {
+    gameOver = true;
+    message.textContent = "Game over! Restart the level to try again.";
+  }
+
+  updateDisplay();
+}
+
+function updatePhysics() {
+  if (!ball || won || gameOver) return;
+
+  // Gravity.
+  ball.vy += 0.17;
+
+  // Move the ball.
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+
+  // Side walls.
+  if (ball.x - ball.radius < 25) {
+    ball.x = 25 + ball.radius;
+    ball.vx = Math.abs(ball.vx) * 0.85;
+  }
+
+  if (ball.x + ball.radius > 375) {
+    ball.x = 375 - ball.radius;
+    ball.vx = -Math.abs(ball.vx) * 0.85;
+  }
+
+  // Top wall.
+  if (ball.y - ball.radius < 25) {
+    ball.y = 25 + ball.radius;
+    ball.vy = Math.abs(ball.vy) * 0.85;
+  }
+
+  // Keep speeds controlled by physics, not random score changes.
+  ball.vx = Math.max(-12, Math.min(12, ball.vx));
+  ball.vy = Math.max(-14, Math.min(14, ball.vy));
+
+  // Bumper collisions.
+  for (const bumper of bumpers) {
+    if (bumper.flash > 0) bumper.flash--;
+    hitBumper(bumper);
+
+    if (won) return;
+  }
+
+  // Left and right flippers.
+  hitFlipper(
+    105, 555,
+    195, leftPressed ? 540 : 570,
+    leftPressed
+  );
+
+  hitFlipper(
+    295, 555,
+    205, rightPressed ? 540 : 570,
+    rightPressed
+  );
+
+  // Drain: a ball that falls below the playfield is lost.
+  if (ball && ball.y - ball.radius > HEIGHT) {
+    loseBall();
+  }
+}
+
+// ----------------------------------
+// DRAWING
+// ----------------------------------
+
+function draw() {
+  ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+  const background = ctx.createLinearGradient(0, 0, 0, HEIGHT);
+  background.addColorStop(0, "#111b49");
+  background.addColorStop(1, "#28134d");
+
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  // Outer walls.
+  ctx.strokeStyle = "#a5b4fc";
+  ctx.lineWidth = 6;
+  ctx.strokeRect(18, 18, 364, 614);
+
+  // Game title.
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#fde68a";
+  ctx.font = "bold 20px Arial";
+  ctx.fillText("PINBALL ADVENTURE", 200, 58);
+
+  ctx.fillStyle = "#c4b5fd";
+  ctx.font = "14px Arial";
+  ctx.fillText("LEVEL " + level, 200, 82);
+
+  // Bumpers.
+  bumpers.forEach(b => {
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius + 5, 0, Math.PI * 2);
+    ctx.fillStyle = "#475569";
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+    ctx.fillStyle = b.flash > 0 ? "#ffffff" : "#22d3ee";
+    ctx.shadowColor = "#22d3ee";
+    ctx.shadowBlur = b.flash > 0 ? 20 : 8;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = "#10203d";
+    ctx.font = "bold 12px Arial";
+    ctx.fillText("+" + pointsForLevel(level), b.x, b.y + 4);
+  });
+
+  // Flippers.
+  ctx.lineCap = "round";
+  ctx.lineWidth = 15;
+
+  ctx.strokeStyle = leftPressed ? "#facc15" : "#ec4899";
+  ctx.beginPath();
+  ctx.moveTo(105, 555);
+  ctx.lineTo(195, leftPressed ? 540 : 570);
+  ctx.stroke();
+
+  ctx.strokeStyle = rightPressed ? "#facc15" : "#22d3ee";
+  ctx.beginPath();
+  ctx.moveTo(295, 555);
+  ctx.lineTo(205, rightPressed ? 540 : 570);
+  ctx.stroke();
+
+  // Ball.
+  if (ball) {
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffffff";
+    ctx.shadowColor = "#ffffff";
+    ctx.shadowBlur = 12;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  } else if (!won && !gameOver) {
+    ctx.fillStyle = "#c4b5fd";
+    ctx.font = "14px Arial";
+    ctx.fillText("PRESS LAUNCH", 200, 480);
+  }
+
+  // Level completion overlay.
+  if (won) {
+    ctx.fillStyle = "rgba(8, 12, 40, 0.85)";
+    ctx.fillRect(35, 235, 330, 115);
+
+    ctx.fillStyle = "#fde68a";
+    ctx.font = "bold 25px Arial";
+    ctx.fillText(
+      level === 20 ? "YOU WON ALL 20!" : "LEVEL COMPLETE!",
+      200, 280
+    );
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "15px Arial";
+    ctx.fillText("Your score: " + score, 200, 310);
+  }
+}
+
+// ----------------------------------
+// BUTTONS AND CONTROLS
+// ----------------------------------
+
+document.getElementById("launch").addEventListener("click", launchBall);
+
+document.getElementById("restart").addEventListener("click", resetLevel);
+
+nextButton.addEventListener("click", () => {
+  if (!won) return;
+
+  if (level < 20) {
+    level++;
+    resetLevel();
+  } else {
+    level = 1;
+    resetLevel();
+    message.textContent = "You completed all 20 levels! Play again!";
+  }
+});
+
+function holdButton(id, setter) {
+  const button = document.getElementById(id);
+
+  button.addEventListener("pointerdown", event => {
+    event.preventDefault();
+    setter(true);
+    button.setPointerCapture(event.pointerId);
+  });
+
+  button.addEventListener("pointerup", () => setter(false));
+  button.addEventListener("pointercancel", () => setter(false));
+  button.addEventListener("lostpointercapture", () => setter(false));
+}
+
+holdButton("left", value => leftPressed = value);
+holdButton("right", value => rightPressed = value);
+
+document.addEventListener("keydown", event => {
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    leftPressed = true;
+  }
+
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    rightPressed = true;
+  }
+
+  if (event.code === "Space") {
+    event.preventDefault();
+    launchBall();
+  }
+});
+
+document.addEventListener("keyup", event => {
+  if (event.key === "ArrowLeft") leftPressed = false;
+  if (event.key === "ArrowRight") rightPressed = false;
+});
+
+// ----------------------------------
+// GAME LOOP
+// ----------------------------------
+
+function gameLoop() {
+  updatePhysics();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+// Start the game.
+resetLevel();
+gameLoop();
+
+</script>
+</body>
+</html>
